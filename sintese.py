@@ -1,9 +1,12 @@
 """Lógica do worker sem GPU: entrada, emoção, frases, áudio e voz de referência."""
 import base64
 import io
+import ipaddress
 import re
+import socket
 import time
 import unicodedata
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Optional
@@ -206,14 +209,40 @@ def decodificar_base64(dado: str) -> bytes:
     return bruto
 
 
+def _conferir_destino(url: str) -> None:
+    """Recusa URLs que não sejam http(s) ou cujo host resolva para um endereço interno."""
+    partes = urllib.parse.urlsplit(url)
+    if partes.scheme.lower() not in ("http", "https") or not partes.hostname:
+        raise EntradaInvalida("'reference_audio_url' precisa ser uma URL http(s).")
+    for *_, endereco in socket.getaddrinfo(partes.hostname, None):
+        ip = ipaddress.ip_address(endereco[0].split("%")[0])
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if not ip.is_global or ip.is_multicast:
+            raise EntradaInvalida("'reference_audio_url' aponta para um endereço interno, o que não é permitido.")
+
+
+class _RedirecionamentoSeguro(urllib.request.HTTPRedirectHandler):
+    """Confere o destino de cada redirecionamento antes de segui-lo."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _conferir_destino(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_ABRIDOR = urllib.request.build_opener(_RedirecionamentoSeguro)
+
+
 def baixar_voz(url: str, tempo_max_s: float = TEMPO_MAX_DOWNLOAD_S) -> bytes:
     """Baixa a voz de referência respeitando o tempo e o tamanho máximos."""
     inicio = time.monotonic()
     partes, total = [], 0
     try:
+        _conferir_destino(url)
         requisicao = urllib.request.Request(url, headers={"User-Agent": "chatterbox-ptbr-worker"})
-        with urllib.request.urlopen(requisicao, timeout=tempo_max_s) as resposta:
-            while bloco := resposta.read(64 * 1024):
+        with _ABRIDOR.open(requisicao, timeout=tempo_max_s) as resposta:
+            # read1 devolve o que já chegou; read(n) esperaria n bytes e furaria o tempo máximo.
+            while bloco := resposta.read1(64 * 1024):
                 total += len(bloco)
                 if total > MAX_BYTES_VOZ:
                     raise EntradaInvalida("A voz de referência passa de 10 MB.")
