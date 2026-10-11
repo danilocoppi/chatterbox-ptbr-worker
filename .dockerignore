@@ -1,0 +1,11 @@
+.git
+.gitignore
+.pytest_cache
+__pycache__
+docs
+tests
+scripts
+modelos
+saida_local
+saida_runpod
+README.md
