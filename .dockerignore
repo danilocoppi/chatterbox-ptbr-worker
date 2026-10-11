@@ -1,11 +1,12 @@
 .git
 .gitignore
 .pytest_cache
+.venv
 __pycache__
 docs
 tests
 scripts
-modelos
-saida_local
-saida_runpod
+models
+output_local
+output_runpod
 README.md

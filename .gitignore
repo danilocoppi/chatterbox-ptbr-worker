@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-modelos/
-saida_local/
-saida_runpod/
+/.venv
+/models/
+/output_local/
+/output_runpod/

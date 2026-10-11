@@ -1,4 +1,4 @@
-"""Worker serverless do RunPod: fala em pt-BR com emoção (Chatterbox Multilingual V3 + pacote pt-BR)."""
+"""RunPod serverless worker: Brazilian Portuguese speech with emotion (Chatterbox Multilingual V3 + pt-BR pack)."""
 import os
 import tempfile
 import time
@@ -7,111 +7,111 @@ import traceback
 import numpy as np
 import torch
 
-import sintese
+import synthesis
 
-SERVICO = None
+SERVICE = None
 
 
-def _para_numpy(wav) -> np.ndarray:
+def _to_numpy(wav) -> np.ndarray:
     if hasattr(wav, "detach"):
         wav = wav.detach().cpu().numpy()
     return np.asarray(wav, dtype=np.float32).reshape(-1)
 
 
-class Servico:
-    """Atende as tarefas com um modelo já carregado (o real, ou um falso nos testes)."""
+class Service:
+    """Serves jobs with an already loaded model (the real one, or a fake one in the tests)."""
 
-    def __init__(self, modelo, voz_padrao, carga_s: float, gpu: str):
-        self.modelo = modelo
-        self.voz_padrao = voz_padrao
-        self.carga_s = carga_s
+    def __init__(self, model, default_voice, load_seconds: float, gpu: str):
+        self.model = model
+        self.default_voice = default_voice
+        self.load_seconds = load_seconds
         self.gpu = gpu
-        self.atendidos = 0
+        self.served = 0
 
-    def atender(self, entrada) -> dict:
-        if isinstance(entrada, dict) and entrada.get("health_check"):
+    def handle(self, job_input) -> dict:
+        if isinstance(job_input, dict) and job_input.get("health_check"):
             return {"status": "healthy", "model_loaded": True, "gpu": self.gpu}
-        primeiro = self.atendidos == 0
-        self.atendidos += 1
+        first = self.served == 0
+        self.served += 1
         try:
-            pedido = sintese.interpretar(entrada)
-            self._preparar_voz(pedido)
-            return self._gerar(pedido, primeiro)
-        except sintese.EntradaInvalida as erro:
-            return {"error": str(erro)}
-        except Exception as erro:
+            request = synthesis.parse_input(job_input)
+            self._prepare_voice(request)
+            return self._generate(request, first)
+        except synthesis.InvalidInput as err:
+            return {"error": str(err)}
+        except Exception as err:
             traceback.print_exc()
-            return {"error": f"Falha inesperada na geração: {erro}"}
+            return {"error": f"Unexpected generation failure: {err}"}
 
-    def _preparar_voz(self, pedido: sintese.Pedido) -> None:
-        # Volta sempre à voz padrão; o generate só troca a intensidade dentro dela.
-        self.modelo.conds = self.voz_padrao
-        dados = sintese.obter_voz(pedido)
-        if dados is None:
+    def _prepare_voice(self, request: synthesis.SpeechRequest) -> None:
+        # Always start from the default voice; generate() only swaps the intensity inside it.
+        self.model.conds = self.default_voice
+        data = synthesis.get_voice(request)
+        if data is None:
             return
-        with tempfile.NamedTemporaryFile(suffix=sintese.sufixo_audio(dados), delete=False) as arquivo:
-            arquivo.write(dados)
+        with tempfile.NamedTemporaryFile(suffix=synthesis.audio_suffix(data), delete=False) as tmp:
+            tmp.write(data)
         try:
-            self.modelo.prepare_conditionals(arquivo.name, exaggeration=pedido.exaggeration)
-        except Exception as erro:
-            self.modelo.conds = self.voz_padrao
-            raise sintese.EntradaInvalida(f"Não foi possível ler a voz de referência: {erro}") from erro
+            self.model.prepare_conditionals(tmp.name, exaggeration=request.exaggeration)
+        except Exception as err:
+            self.model.conds = self.default_voice
+            raise synthesis.InvalidInput(f"Could not read the reference voice: {err}") from err
         finally:
-            os.unlink(arquivo.name)
+            os.unlink(tmp.name)
 
-    def _gerar(self, pedido: sintese.Pedido, primeiro: bool) -> dict:
-        frases = sintese.dividir_frases(pedido.texto)
-        trechos, tempos = [], []
-        for frase in frases:
-            if pedido.seed is not None:
-                torch.manual_seed(pedido.seed)
-            inicio = time.perf_counter()
-            wav = self.modelo.generate(frase, language_id="pt", exaggeration=pedido.exaggeration,
-                                       cfg_weight=pedido.cfg_weight, temperature=pedido.temperature)
-            tempos.append(time.perf_counter() - inicio)
-            trechos.append(_para_numpy(wav))
-        sr = self.modelo.sr
-        audio = sintese.juntar(trechos, sr)
-        duracao = len(audio) / sr
-        geracao = sum(tempos)
+    def _generate(self, request: synthesis.SpeechRequest, first: bool) -> dict:
+        sentences = synthesis.split_sentences(request.text)
+        chunks, timings = [], []
+        for sentence in sentences:
+            if request.seed is not None:
+                torch.manual_seed(request.seed)
+            start = time.perf_counter()
+            wav = self.model.generate(sentence, language_id="pt", exaggeration=request.exaggeration,
+                                      cfg_weight=request.cfg_weight, temperature=request.temperature)
+            timings.append(time.perf_counter() - start)
+            chunks.append(_to_numpy(wav))
+        sr = self.model.sr
+        audio = synthesis.join_audio(chunks, sr)
+        duration = len(audio) / sr
+        generation = sum(timings)
         return {
-            "audio_base64": sintese.wav_base64(audio, sr),
+            "audio_base64": synthesis.wav_base64(audio, sr),
             "sample_rate": sr,
-            "duration_seconds": round(duracao, 3),
-            "text": pedido.texto,
-            "emotion": pedido.emocao,
+            "duration_seconds": round(duration, 3),
+            "text": request.text,
+            "emotion": request.emotion,
             "metrics": {
-                "generation_seconds": round(geracao, 3),
-                "first_sentence_seconds": round(tempos[0], 3),
-                "rtf": round(geracao / duracao, 3) if duracao else None,
-                "sentences": len(frases),
+                "generation_seconds": round(generation, 3),
+                "first_sentence_seconds": round(timings[0], 3),
+                "rtf": round(generation / duration, 3) if duration else None,
+                "sentences": len(sentences),
                 "gpu": self.gpu,
-                "cold_start": primeiro,
-                "model_load_seconds": round(self.carga_s, 2),
+                "cold_start": first,
+                "model_load_seconds": round(self.load_seconds, 2),
             },
         }
 
 
-def iniciar(device: str = "cuda") -> Servico:
-    """Carrega o modelo, prepara a voz padrão e aquece a GPU; uma vez por worker."""
-    import ptbr
+def init_service(device: str = "cuda") -> Service:
+    """Load the model, prepare the default voice and warm up the GPU; once per worker."""
+    import ptbr_model
 
-    inicio = time.perf_counter()
-    modelo = ptbr.carregar(device)
-    carga_s = time.perf_counter() - inicio
-    modelo.prepare_conditionals(str(ptbr.baixar_voz_padrao()), exaggeration=0.5)
-    modelo.generate("Aquecendo a placa de vídeo.", language_id="pt")
+    start = time.perf_counter()
+    model = ptbr_model.load(device)
+    load_seconds = time.perf_counter() - start
+    model.prepare_conditionals(str(ptbr_model.download_default_voice()), exaggeration=0.5)
+    model.generate("Aquecendo a placa de vídeo.", language_id="pt")
     gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
-    print(f"[worker] modelo pronto em {carga_s:.1f} s na {gpu}", flush=True)
-    return Servico(modelo, modelo.conds, carga_s, gpu)
+    print(f"[worker] model ready in {load_seconds:.1f} s on {gpu}", flush=True)
+    return Service(model, model.conds, load_seconds, gpu)
 
 
 def handler(job: dict) -> dict:
-    return SERVICO.atender(job.get("input"))
+    return SERVICE.handle(job.get("input"))
 
 
 if __name__ == "__main__":
     import runpod
 
-    SERVICO = iniciar()
+    SERVICE = init_service()
     runpod.serverless.start({"handler": handler})
