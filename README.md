@@ -27,6 +27,7 @@ $PY -m pytest tests -q                       # testes sem GPU
 $PY baixar_pesos.py                          # pesos e voz padrão em ./modelos
 $PY scripts/integracao_local.py              # modelo real na GPU -> saida_local/
 env -u LD_LIBRARY_PATH uv run --python 3.11 --with sherpa-onnx --with soundfile python scripts/transcrever.py saida_local
+scripts/simular_imagem.sh                    # imagem sem Docker: monta numa pasta nova e liga sem rede (~3 GB)
 ```
 
 A imagem instala as versões exatas do `requirements.lock`. Depois de mudar o `requirements.txt`, gere o lock de novo:

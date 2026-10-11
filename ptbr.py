@@ -55,6 +55,12 @@ def baixar_voz_padrao() -> Path:
     return VOZ_PADRAO
 
 
+def carregar_tokenizador(ckpt: Path) -> MTLTokenizer:
+    """Cria o tokenizador; na primeira vez ele baixa o segmentador chinês (para PKUSEG_HOME) e o mapa
+    Cangjie (para dentro do checkpoint). A montagem da imagem chama isto para que já fiquem lá."""
+    return MTLTokenizer(str(ckpt / "grapheme_mtl_merged_expanded_v1.json"))
+
+
 def carregar(device: str = "cuda") -> ChatterboxMultilingualTTS:
     """Igual ao from_local do pacote, com o vocabulário lido do próprio checkpoint pt-BR."""
     ckpt = montar_checkpoint()
@@ -79,6 +85,6 @@ def carregar(device: str = "cuda") -> ChatterboxMultilingualTTS:
         raise RuntimeError(f"Checkpoint S3Gen inesperado: faltando={faltando}, sobrando={sobrando}")
     s3gen.to(device).eval()
 
-    tokenizer = MTLTokenizer(str(ckpt / "grapheme_mtl_merged_expanded_v1.json"))
+    tokenizer = carregar_tokenizador(ckpt)
     conds = Conditionals.load(ckpt / "conds.pt", map_location="cpu").to(device)
     return ChatterboxMultilingualTTS(t3, s3gen, ve, tokenizer, device, conds=conds)
