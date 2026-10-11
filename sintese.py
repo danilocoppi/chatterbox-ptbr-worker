@@ -2,7 +2,9 @@
 import base64
 import io
 import re
+import time
 import unicodedata
+import urllib.request
 from dataclasses import dataclass
 from typing import Optional
 
@@ -13,6 +15,8 @@ MAX_CARACTERES = 1000
 TEMPERATURA_PADRAO = 0.8
 MAX_FRASE = 300
 PAUSA_ENTRE_FRASES_S = 0.15
+MAX_BYTES_VOZ = 10 * 1024 * 1024
+TEMPO_MAX_DOWNLOAD_S = 15.0
 
 # emoção -> (exaggeration, cfg_weight)
 EMOCOES = {
@@ -184,3 +188,64 @@ def wav_base64(audio: np.ndarray, sr: int) -> str:
     sinal = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
     sf.write(buffer, sinal, sr, format="WAV", subtype="PCM_16")
     return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def decodificar_base64(dado: str) -> bytes:
+    """Decodifica a voz em base64; aceita prefixo data: e quebras de linha."""
+    if dado.startswith("data:"):
+        dado = dado.split(",", 1)[-1]
+    dado = "".join(dado.split())
+    try:
+        bruto = base64.b64decode(dado, validate=True)
+    except ValueError as erro:
+        raise EntradaInvalida("'reference_audio_base64' não é um base64 válido.") from erro
+    if not bruto:
+        raise EntradaInvalida("A voz de referência está vazia.")
+    if len(bruto) > MAX_BYTES_VOZ:
+        raise EntradaInvalida("A voz de referência passa de 10 MB.")
+    return bruto
+
+
+def baixar_voz(url: str, tempo_max_s: float = TEMPO_MAX_DOWNLOAD_S) -> bytes:
+    """Baixa a voz de referência respeitando o tempo e o tamanho máximos."""
+    inicio = time.monotonic()
+    partes, total = [], 0
+    try:
+        requisicao = urllib.request.Request(url, headers={"User-Agent": "chatterbox-ptbr-worker"})
+        with urllib.request.urlopen(requisicao, timeout=tempo_max_s) as resposta:
+            while bloco := resposta.read(64 * 1024):
+                total += len(bloco)
+                if total > MAX_BYTES_VOZ:
+                    raise EntradaInvalida("A voz de referência passa de 10 MB.")
+                if time.monotonic() - inicio > tempo_max_s:
+                    raise EntradaInvalida(f"O download da voz de referência passou de {tempo_max_s:.0f} s.")
+                partes.append(bloco)
+    except EntradaInvalida:
+        raise
+    except (OSError, ValueError) as erro:
+        raise EntradaInvalida(f"Não foi possível baixar a voz de referência: {erro}") from erro
+    if not partes:
+        raise EntradaInvalida("A voz de referência está vazia.")
+    return b"".join(partes)
+
+
+def obter_voz(pedido: Pedido) -> Optional[bytes]:
+    """Bytes da voz de referência do pedido, ou None para usar a voz padrão."""
+    if pedido.voz_url:
+        return baixar_voz(pedido.voz_url)
+    if pedido.voz_base64:
+        return decodificar_base64(pedido.voz_base64)
+    return None
+
+
+def sufixo_audio(dados: bytes) -> str:
+    """Extensão do arquivo temporário a partir do conteúdo, para o leitor de áudio."""
+    if dados[:4] == b"RIFF":
+        return ".wav"
+    if dados[:4] == b"fLaC":
+        return ".flac"
+    if dados[:4] == b"OggS":
+        return ".ogg"
+    if dados[:3] == b"ID3" or dados[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return ".mp3"
+    return ".audio"
