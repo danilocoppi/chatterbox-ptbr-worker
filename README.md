@@ -29,6 +29,12 @@ $PY scripts/integracao_local.py              # modelo real na GPU -> saida_local
 env -u LD_LIBRARY_PATH uv run --python 3.11 --with sherpa-onnx --with soundfile python scripts/transcrever.py saida_local
 ```
 
+A imagem instala as versões exatas do `requirements.lock`. Depois de mudar o `requirements.txt`, gere o lock de novo:
+
+```bash
+env -u LD_LIBRARY_PATH uv pip compile requirements.txt --python-version 3.11 -o requirements.lock
+```
+
 ## Publicar no RunPod
 
 1. **Settings → Connections:** conecte o GitHub e dê acesso a este repositório.

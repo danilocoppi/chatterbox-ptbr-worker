@@ -10,8 +10,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+# Versões exatas do lock (gerado a partir do requirements.txt), as mesmas validadas localmente.
+COPY requirements.lock .
+RUN pip install --no-deps -r requirements.lock
 
 # Pesos e voz padrão dentro da imagem: o worker liga sem internet.
 COPY ptbr.py baixar_pesos.py ./
