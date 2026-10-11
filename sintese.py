@@ -1,11 +1,18 @@
 """Lógica do worker sem GPU: entrada, emoção, frases, áudio e voz de referência."""
+import base64
+import io
 import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 
+import numpy as np
+import soundfile as sf
+
 MAX_CARACTERES = 1000
 TEMPERATURA_PADRAO = 0.8
+MAX_FRASE = 300
+PAUSA_ENTRE_FRASES_S = 0.15
 
 # emoção -> (exaggeration, cfg_weight)
 EMOCOES = {
@@ -23,6 +30,8 @@ SINONIMOS = {
 }
 
 _ETIQUETA = re.compile(r"^\s*\[([A-Za-zÀ-ÿ_]+)\]\s*")
+_FIM_DE_FRASE = re.compile(r"(?<=[.!?…])\s+")
+_VIRGULA = re.compile(r"(?<=[,;])\s+")
 
 
 class EntradaInvalida(ValueError):
@@ -115,3 +124,63 @@ def interpretar(entrada) -> Pedido:
         voz_url=url,
         voz_base64=None if url else b64,
     )
+
+
+def _agrupar(unidades: list[str]) -> list[str]:
+    """Junta unidades com espaço em pedaços de até MAX_FRASE caracteres."""
+    pedacos, atual = [], ""
+    for unidade in unidades:
+        if atual and len(atual) + 1 + len(unidade) > MAX_FRASE:
+            pedacos.append(atual)
+            atual = unidade
+        else:
+            atual = f"{atual} {unidade}" if atual else unidade
+    if atual:
+        pedacos.append(atual)
+    return pedacos
+
+
+def _palavras(texto: str) -> list[str]:
+    """Palavras do texto; uma palavra maior que MAX_FRASE é cortada em pedaços desse tamanho."""
+    saida = []
+    for palavra in texto.split():
+        saida.extend(palavra[i:i + MAX_FRASE] for i in range(0, len(palavra), MAX_FRASE))
+    return saida
+
+
+def _quebrar_longa(frase: str) -> list[str]:
+    if len(frase) <= MAX_FRASE:
+        return [frase]
+    unidades = []
+    for parte in _VIRGULA.split(frase):
+        unidades.extend([parte] if len(parte) <= MAX_FRASE else _agrupar(_palavras(parte)))
+    return _agrupar(unidades)
+
+
+def dividir_frases(texto: str) -> list[str]:
+    """Divide em frases (. ! ? …) e quebra as maiores que MAX_FRASE em vírgulas ou palavras."""
+    frases = []
+    for frase in _FIM_DE_FRASE.split(texto.strip()):
+        frase = frase.strip()
+        if frase:
+            frases.extend(_quebrar_longa(frase))
+    return frases
+
+
+def juntar(trechos: list, sr: int, pausa_s: float = PAUSA_ENTRE_FRASES_S) -> np.ndarray:
+    """Concatena os trechos de áudio com um silêncio entre eles."""
+    silencio = np.zeros(int(round(sr * pausa_s)), dtype=np.float32)
+    partes = []
+    for i, trecho in enumerate(trechos):
+        if i:
+            partes.append(silencio)
+        partes.append(np.asarray(trecho, dtype=np.float32).reshape(-1))
+    return np.concatenate(partes) if partes else np.zeros(0, dtype=np.float32)
+
+
+def wav_base64(audio: np.ndarray, sr: int) -> str:
+    """Codifica o áudio como WAV PCM 16 bits mono em base64."""
+    buffer = io.BytesIO()
+    sinal = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
+    sf.write(buffer, sinal, sr, format="WAV", subtype="PCM_16")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
