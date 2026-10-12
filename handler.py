@@ -60,18 +60,19 @@ class Service:
             os.unlink(tmp.name)
 
     def _generate(self, request: synthesis.SpeechRequest, first: bool) -> dict:
-        sentences = synthesis.split_sentences(request.text)
+        texts = synthesis.split_chunks(request.text)
         chunks, timings = [], []
-        for sentence in sentences:
+        for text in texts:
             if request.seed is not None:
                 torch.manual_seed(request.seed)
             start = time.perf_counter()
-            wav = self.model.generate(sentence, language_id="pt", exaggeration=request.exaggeration,
-                                      cfg_weight=request.cfg_weight, temperature=request.temperature)
+            wav = self.model.generate(text, language_id="pt", exaggeration=request.exaggeration,
+                                      cfg_weight=request.cfg_weight, temperature=request.temperature,
+                                      top_p=synthesis.TOP_P)
             timings.append(time.perf_counter() - start)
             chunks.append(_to_numpy(wav))
         sr = self.model.sr
-        audio = synthesis.join_audio(chunks, sr)
+        audio = synthesis.normalize_loudness(synthesis.join_audio(chunks, sr), sr)
         duration = len(audio) / sr
         generation = sum(timings)
         return {
@@ -82,9 +83,9 @@ class Service:
             "emotion": request.emotion,
             "metrics": {
                 "generation_seconds": round(generation, 3),
-                "first_sentence_seconds": round(timings[0], 3),
+                "first_chunk_seconds": round(timings[0], 3),
                 "rtf": round(generation / duration, 3) if duration else None,
-                "sentences": len(sentences),
+                "chunks": len(texts),
                 "gpu": self.gpu,
                 "cold_start": first,
                 "model_load_seconds": round(self.load_seconds, 2),

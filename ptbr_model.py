@@ -55,14 +55,24 @@ def download_default_voice() -> Path:
     return DEFAULT_VOICE
 
 
+class RawTextTokenizer(MTLTokenizer):
+    """Feeds the text as written, keeping capitals and accented letters, as Resemble's official pt-BR demo does.
+    The multilingual tokenizer would lowercase the text and split each accent from its letter (NFKD)."""
+
+    def text_to_tokens(self, text, language_id=None, lowercase=False, nfkd_normalize=False):
+        return super().text_to_tokens(text, language_id=language_id, lowercase=lowercase,
+                                      nfkd_normalize=nfkd_normalize)
+
+
 def load_tokenizer(checkpoint: Path) -> MTLTokenizer:
     """Create the tokenizer. The first time, it downloads the Chinese segmenter (into PKUSEG_HOME) and the
     Cangjie map (into the checkpoint); the image build calls this so both are already there at startup."""
-    return MTLTokenizer(str(checkpoint / "grapheme_mtl_merged_expanded_v1.json"))
+    return RawTextTokenizer(str(checkpoint / "grapheme_mtl_merged_expanded_v1.json"))
 
 
 def load(device: str = "cuda") -> ChatterboxMultilingualTTS:
-    """Same as the package's from_local, with the vocabulary size read from the pt-BR checkpoint itself."""
+    """Same as the package's from_local, with the vocabulary size read from the pt-BR checkpoint itself and the
+    text fed as written."""
     checkpoint = assemble_checkpoint()
 
     ve = VoiceEncoder()

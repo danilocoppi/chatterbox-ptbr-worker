@@ -66,7 +66,7 @@ def main():
         m = result["metrics"]
         print(f"{name}: total {total:.1f} s (queue + start {status.get('delayTime', 0) / 1000:.1f} s, "
               f"execution {status.get('executionTime', 0) / 1000:.1f} s) | generation {m['generation_seconds']:.2f} s, "
-              f"first sentence {m['first_sentence_seconds']:.2f} s, RTF {m['rtf']}, {m['gpu']}, cold={m['cold_start']}",
+              f"first chunk {m['first_chunk_seconds']:.2f} s, RTF {m['rtf']}, {m['gpu']}, cold={m['cold_start']}",
               flush=True)
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 

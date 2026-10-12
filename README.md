@@ -17,14 +17,16 @@ RunPod Serverless (queue) worker that turns **Brazilian Portuguese text into spe
 
 ## Capabilities
 
-- **Text-to-Speech in Brazilian Portuguese.** Uses the official pt-BR pack [`ResembleAI/Chatterbox-Multilingual-pt-br`](https://huggingface.co/ResembleAI/Chatterbox-Multilingual-pt-br). Measured pronunciation error is 0–1.6% character error rate, checked with the Parakeet speech recognizer.
+- **Text-to-Speech in Brazilian Portuguese.** Uses the official pt-BR pack [`ResembleAI/Chatterbox-Multilingual-pt-br`](https://huggingface.co/ResembleAI/Chatterbox-Multilingual-pt-br). Measured pronunciation error is 0–3% character error rate (0.5% on average on RunPod), checked with the Parakeet speech recognizer.
+- **Generated Like the Official Demo.** Same settings as Resemble's [pt-BR demo](https://huggingface.co/spaces/ResembleAI/Chatterbox-Multilingual-TTS-pt-br): the text goes in as written, sampling uses `top_p` 0.95, and up to 300 characters are generated in one pass.
 - **Voice Cloning.** Clones any voice from a reference clip sent by URL or as base64. WAV, MP3, FLAC and OGG are accepted.
 - **Emotion Control:**
   - seven presets, named in English or Portuguese;
   - an inline tag such as `[alegre] Consegui!`;
   - fine control with `exaggeration`, `cfg_weight`, `temperature` and `seed`.
-- **Long Text.** Accepts up to 1,000 characters per job and splits them into sentences automatically.
-- **Metrics in Every Response:** generation time, time to the first sentence, real-time factor, GPU and cold start.
+- **Long Text.** Accepts up to 1,000 characters per job. A text of up to 300 characters is generated in one pass; a longer one is split into chunks of whole sentences.
+- **Consistent Volume.** The speech is normalized to −20 dBFS, with peaks kept at −1 dBFS or lower.
+- **Metrics in Every Response:** generation time, time of the first chunk, real-time factor, GPU and cold start.
 - **Offline Start and Pinned Dependencies.** The image installs exact versions from a lock file and never downloads at startup.
 - **Safe Failures.** Invalid input gets a clear error message, and an unexpected error never kills the worker.
 - **Watermark.** Every output carries Resemble's imperceptible [Perth](https://github.com/resemble-ai/Perth) watermark.
@@ -40,22 +42,22 @@ RunPod's own GitHub builder was tried first. It downloaded at about 100 kB/s and
 Push a version tag, or run the workflow by hand:
 
 ```bash
-git tag v1.0.1 && git push origin v1.0.1   # or: gh workflow run image.yml
+git tag v1.1.0 && git push origin v1.1.0   # or: gh workflow run image.yml
 ```
 
 The image gets up to three tags:
-- the version, such as `v1.0.1`, on tag builds only;
+- the version, such as `v1.1.0`, on tag builds only;
 - the commit, such as `sha-1a2b3c4`;
 - `latest`.
 
-A build takes about 20 minutes. Follow it in the repository's **Actions** tab.
+A build takes about 8 minutes. Follow it in the repository's **Actions** tab.
 
-The package must be **public**, so that RunPod can pull it without credentials. This is a one-time step: on GitHub, open your profile, then **Packages → chatterbox-ptbr-worker → Package settings → Change visibility → Public**.
+The package must be **public**, so that RunPod can pull it without credentials. Published by the workflow of a public repository, it starts out public. If it shows as private, open your profile on GitHub, then **Packages → chatterbox-ptbr-worker → Package settings → Change visibility → Public**.
 
 ### 2. Create the Serverless Endpoint
 
 1. Go to **Serverless → New Endpoint** and choose to deploy a **Docker image**.
-2. **Image:** `ghcr.io/danilocoppi/chatterbox-ptbr-worker:v1.0.1`. Prefer a version or `sha-` tag over `latest`, because RunPod hosts cache images by tag.
+2. **Image:** `ghcr.io/danilocoppi/chatterbox-ptbr-worker:v1.1.0`. Prefer a version or `sha-` tag over `latest`, because RunPod hosts cache images by tag.
 3. **GPU:** the model needs ~3.5 GB, so any GPU with 8 GB or more works. The 24 GB tier (L4, A5000, RTX 3090) is the cheapest option; use the 48 GB tier (A40, A6000) only for comparisons.
 4. **Workers:** for testing, set active (minimum) workers to 0 and max workers to 1.
 5. **Timeouts:** keep the default idle timeout of 5 s and execution timeout of 600 s. A job of 1,000 characters takes well under a minute.
@@ -64,7 +66,7 @@ The package must be **public**, so that RunPod can pull it without credentials. 
 8. **Allowed CUDA versions:** 12.4 or newer. The image uses PyTorch 2.6 with CUDA 12.4.
 9. **No network volume needed.** The model (~3 GB) is included in the ~10 GB image.
 
-The first job on a new machine waits while the image is pulled.
+The first job on a new machine waits while the image is pulled; that took about 4 minutes. Later cold starts on RunPod took 46–93 s.
 
 ### 3. Environment Variables
 
@@ -321,11 +323,11 @@ The job's `output`:
   "text": "O lembrete ficou para amanhã de manhã. Não esqueça a reunião com o pessoal do projeto.",
   "emotion": "neutral",
   "metrics": {
-    "generation_seconds": 3.85,
-    "first_sentence_seconds": 1.756,
-    "rtf": 0.577,
-    "sentences": 2,
-    "gpu": "NVIDIA GeForce RTX 3060 Ti",
+    "generation_seconds": 5.29,
+    "first_chunk_seconds": 5.29,
+    "rtf": 0.798,
+    "chunks": 1,
+    "gpu": "NVIDIA GeForce RTX 3090",
     "cold_start": true,
     "model_load_seconds": 7.27
   }
@@ -334,15 +336,15 @@ The job's `output`:
 
 | Field | Description |
 |---|---|
-| `audio_base64` | 16-bit PCM mono WAV, base64-encoded |
+| `audio_base64` | 16-bit PCM mono WAV, base64-encoded, normalized to −20 dBFS |
 | `sample_rate` | Always 24000 |
-| `duration_seconds` | Audio length, including 150 ms of silence between sentences |
+| `duration_seconds` | Audio length, including 150 ms of silence between chunks |
 | `text` | The spoken text, with the tag removed |
 | `emotion` | Canonical English name of the emotion used |
-| `metrics.generation_seconds` | Synthesis time for all sentences; excludes preparing the reference voice and encoding the WAV |
-| `metrics.first_sentence_seconds` | Synthesis time of the first sentence; your time to first audio if you play sentence by sentence |
+| `metrics.generation_seconds` | Synthesis time for all chunks; excludes preparing the reference voice and encoding the WAV |
+| `metrics.first_chunk_seconds` | Synthesis time of the first chunk, which is the whole text when it fits in 300 characters |
 | `metrics.rtf` | Real-time factor, `generation_seconds / duration_seconds`; below 1 means faster than real time |
-| `metrics.sentences` | Number of pieces the text was split into |
+| `metrics.chunks` | Number of generation passes; a text of up to 300 characters takes one |
 | `metrics.gpu` | GPU that served the job |
 | `metrics.cold_start` | `true` on the first job a worker serves after starting |
 | `metrics.model_load_seconds` | Model load time when the worker started |
@@ -391,29 +393,31 @@ On invalid input or a failed generation, the job ends as `FAILED` and the messag
 
 ## Cost Estimates
 
-The times below were measured on a local RTX 3060 Ti (8 GB) with the same code and package versions as the image. RunPod's 24 GB GPUs should be as fast or faster. Costs apply RunPod's flex prices of 2026-10-11: **$0.00019/s** for the 24 GB tier (L4, A5000, RTX 3090) and **$0.00034/s** for the 48 GB tier (A40, A6000). Check [runpod.io/pricing](https://www.runpod.io/pricing) for current prices.
+Measured on RunPod on 2026-10-11 with `scripts/benchmark_endpoint.py`. The worker got an RTX 3090 from the 24 GB tier, billed at the flex price of **$0.00019/s**. The 48 GB tier (A40, A6000) costs **$0.00034/s**. Check [runpod.io/pricing](https://www.runpod.io/pricing) for current prices.
 
-| Task | Audio produced | Time (RTX 3060 Ti) | Cost, 24 GB tier | Cost, 48 GB tier |
-|---|---|---|---|---|
-| TTS, 30 words (173 characters) | ~17 s | ~9 s | ~$0.0017 | ~$0.0031 |
-| TTS, 109 words (633 characters) | ~54 s | ~27 s | ~$0.0052 | ~$0.0093 |
-| Voice clone setup (27 s reference clip) | | ~0.1 s | ~$0.00002 | ~$0.00003 |
-| Cold start (model load + warm-up) | | ~8 s | ~$0.0015 | ~$0.0027 |
-| Idle timeout after the last job | | 5 s (default) | ~$0.00095 | ~$0.0017 |
+| Task | Audio produced | Time on RunPod (RTX 3090) | Cost, 24 GB tier |
+|---|---|---|---|
+| TTS, 15 words (86 characters) | ~6.6 s | ~5.7 s | ~$0.0011 |
+| Voice clone by URL, 8 words (44 characters) | ~3.4 s | ~4.1 s, including the download | ~$0.0008 |
+| Cold start (worker start, model load and warm-up) | | 46–93 s, including any wait for a free GPU | up to ~$0.018 |
+| First job on a new machine (image pull) | | ~4 min | |
+| Idle timeout after the last job | | 5 s (default) | ~$0.00095 |
 
-In short, a minute of speech costs about **$0.006** on the 24 GB tier and **$0.010** on the 48 GB tier. Cloning a voice adds almost nothing, apart from the download time when the voice comes by URL.
+In short, a minute of speech costs about **$0.009** on the 24 GB tier, plus the cold start when the endpoint scales from zero.
 
-Billing is per second while a worker runs, not only while it executes jobs. A request that scales the endpoint from zero also pays the cold start, plus the image start. After the last job, the worker also bills the idle timeout. Cloud figures from `scripts/benchmark_endpoint.py` will replace these after the first deployment.
+The RunPod RTX 3090 was slower than a local RTX 3060 Ti. The model generates one speech token at a time, so the host's CPU matters more than the GPU's power. A stronger GPU doesn't change the audio quality either: every GPU runs the same model in float32.
 
-Other measurements on the same GPU:
+Billing is per second while a worker runs, not only while it executes jobs. A request that scales the endpoint from zero also pays the cold start. After the last job, the worker also bills the idle timeout.
 
-| Measure | Value |
-|---|---|
-| Model load (weights on local disk) | 6–7 s |
-| GPU memory | ~3.0 GiB of weights, ~3.5 GiB peak |
-| Real-time factor | 0.5–0.58, so speech is generated about 2× faster than it plays |
-| First sentence of a job | 1.0–2.3 s |
-| Pronunciation (Parakeet character error rate) | 0–1.6% |
+Other measurements:
+
+| Measure | RunPod (RTX 3090) | Local (RTX 3060 Ti) |
+|---|---|---|
+| Real-time factor (generation time ÷ audio length) | 0.77–0.84 | 0.50–0.58 |
+| Queue wait with a warm worker | 0.1 s | |
+| Model load (weights on local disk) | | 6–7 s |
+| GPU memory | | ~3.0 GiB of weights, ~3.5 GiB peak |
+| Pronunciation (Parakeet character error rate) | 0–2.9%, 0.5% on average | 0–1.6% |
 
 ## Reference Audio Requirements
 
@@ -507,9 +511,9 @@ The URL must point to the audio file itself, not to a sharing page such as a Goo
 3. The voice is resolved:
    - the default voice is restored first;
    - a custom voice is downloaded or decoded to a temporary file, turned into conditionals, and the file is deleted.
-4. The text is split after `.`, `!`, `?` or `…`. Pieces longer than 300 characters are split at `,` or `;`, then between words.
-5. Each sentence is generated with the same parameters, and the seed is applied before each one.
-6. The sentences are joined with 150 ms of silence, encoded as WAV and returned with the metrics.
+4. The text is split into chunks of up to 300 characters, so a short text is a single chunk. Splits fall after `.`, `!`, `?` or `…`; a longer sentence is split at `,` or `;`, then between words.
+5. Each chunk is generated with the job's parameters and `top_p` 0.95, with the text fed as written (capitals and accented letters kept), the same as Resemble's official pt-BR demo. The seed is applied before each chunk.
+6. The chunks are joined with 150 ms of silence. The level is normalized so the voiced part sits at −20 dBFS, with peaks at −1 dBFS or lower, and the audio is encoded as WAV and returned with the metrics.
 
 Each worker serves one job at a time, which is the RunPod default.
 
@@ -592,10 +596,12 @@ uv pip compile requirements.txt --python-version 3.11 -o requirements.lock
 ## Limitations
 
 - **Language:** Brazilian Portuguese only.
-- **No streaming:** the response arrives once the whole text is synthesized. For lower latency, send short sentences as separate jobs. On a 3060 Ti, the first sentence takes 1–2 s.
+- **No streaming:** the response arrives once the whole text is synthesized. On RunPod's RTX 3090, a text of about 90 characters takes 5–6 s.
 - **No speed control.**
 - **Text size:** at most 1,000 characters per job.
-- **Sentence splitting** relies on punctuation, so an abbreviation such as "Sr." starts a new piece and adds a short pause.
+- **Chunk boundaries** in texts over 300 characters follow punctuation, so a chunk can end at an abbreviation such as "Sr." and add a short pause there.
+- **Naturalness varies between generations,** in the official demo too. Very short phrases of a few words tend to sound the most synthetic. If a result sounds off, generate it again or change the `seed`.
+- **Frequency range:** the model produces sound up to 8 kHz, so it sounds a little duller than a studio recording.
 - **`seed`** is reproducible only on the same GPU type and software versions.
 - **Emotions:** presets control intensity and pace. A clearly different emotion needs a reference clip recorded that way.
 - **Watermark:** every output carries the Perth watermark.
@@ -607,6 +613,7 @@ uv pip compile requirements.txt --python-version 3.11 -o requirements.lock
 |---|---|---|
 | The job stays `IN_QUEUE` | The build isn't finished, no GPU of the chosen type is free, or a cold start is pulling the ~10 GB image | Check the build and worker status in the console; allow more GPU types; wait for the first pull |
 | `/runsync` returns `IN_QUEUE` or `IN_PROGRESS` | The job took longer than the sync wait (90 s by default) | Poll `GET /status/{id}`, or use `/run` |
+| The speech sounds robotic or flat | Generations vary from one to the next, and phrases of a few words are the hardest; the emotion presets only change intensity | Generate again or change the `seed`; send whole sentences; for a real emotion, use a reference clip recorded in it |
 | `Could not read the reference voice: ...` | The URL returned a web page (a Drive or Dropbox share page, say) or a format that isn't audio | Use a direct download link to a WAV, MP3, FLAC or OGG file |
 | `... points to an internal address ...` | The URL resolves to a private or local address | Host the clip on a public URL, or send it as base64 |
 | Code changes don't show up on RunPod | The endpoint still points to the old image tag | Build a new tag and change the endpoint's image (see [Updating](#4-updating)) |

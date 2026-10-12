@@ -1,4 +1,4 @@
-"""GPU-free worker logic: input parsing, emotions, sentence splitting, audio encoding and the reference voice."""
+"""GPU-free worker logic: input parsing, emotions, text chunking, audio level and encoding, and the reference voice."""
 import base64
 import io
 import ipaddress
@@ -16,8 +16,14 @@ import soundfile as sf
 
 MAX_CHARS = 1000
 DEFAULT_TEMPERATURE = 0.8
-MAX_SENTENCE_CHARS = 300
-SENTENCE_PAUSE_S = 0.15
+# Nucleus sampling of the official pt-BR demo (Resemble's Space); the multilingual class would use 1.0.
+TOP_P = 0.95
+# One generation pass; the official demo also caps its text at 300 characters.
+MAX_CHUNK_CHARS = 300
+CHUNK_PAUSE_S = 0.15
+# Speech level of the response: RMS of the voiced part, with the peak kept 1 dB below full scale.
+TARGET_DBFS = -20.0
+PEAK_LIMIT = 10 ** (-1 / 20)
 MAX_VOICE_BYTES = 10 * 1024 * 1024
 MAX_DOWNLOAD_S = 15.0
 
@@ -136,10 +142,10 @@ def parse_input(job_input) -> SpeechRequest:
 
 
 def _group(units: list[str]) -> list[str]:
-    """Join units with spaces into pieces of at most MAX_SENTENCE_CHARS characters."""
+    """Join units with spaces into pieces of at most MAX_CHUNK_CHARS characters."""
     pieces, current = [], ""
     for unit in units:
-        if current and len(current) + 1 + len(unit) > MAX_SENTENCE_CHARS:
+        if current and len(current) + 1 + len(unit) > MAX_CHUNK_CHARS:
             pieces.append(current)
             current = unit
         else:
@@ -150,24 +156,24 @@ def _group(units: list[str]) -> list[str]:
 
 
 def _words(text: str) -> list[str]:
-    """Words of the text; a word longer than MAX_SENTENCE_CHARS is cut into pieces of that size."""
+    """Words of the text; a word longer than MAX_CHUNK_CHARS is cut into pieces of that size."""
     words = []
     for word in text.split():
-        words.extend(word[i:i + MAX_SENTENCE_CHARS] for i in range(0, len(word), MAX_SENTENCE_CHARS))
+        words.extend(word[i:i + MAX_CHUNK_CHARS] for i in range(0, len(word), MAX_CHUNK_CHARS))
     return words
 
 
 def _split_long(sentence: str) -> list[str]:
-    if len(sentence) <= MAX_SENTENCE_CHARS:
+    if len(sentence) <= MAX_CHUNK_CHARS:
         return [sentence]
     units = []
     for clause in _CLAUSE_END.split(sentence):
-        units.extend([clause] if len(clause) <= MAX_SENTENCE_CHARS else _group(_words(clause)))
+        units.extend([clause] if len(clause) <= MAX_CHUNK_CHARS else _group(_words(clause)))
     return _group(units)
 
 
 def split_sentences(text: str) -> list[str]:
-    """Split on . ! ? … and break pieces longer than MAX_SENTENCE_CHARS at commas, then between words."""
+    """Split on . ! ? … and break pieces longer than MAX_CHUNK_CHARS at commas, then between words."""
     sentences = []
     for sentence in _SENTENCE_END.split(text.strip()):
         sentence = sentence.strip()
@@ -176,7 +182,13 @@ def split_sentences(text: str) -> list[str]:
     return sentences
 
 
-def join_audio(chunks: list, sr: int, pause_s: float = SENTENCE_PAUSE_S) -> np.ndarray:
+def split_chunks(text: str) -> list[str]:
+    """Whole sentences grouped into chunks of at most MAX_CHUNK_CHARS. A text that fits is generated in one pass,
+    which keeps the intonation flowing from one sentence to the next."""
+    return _group(split_sentences(text))
+
+
+def join_audio(chunks: list, sr: int, pause_s: float = CHUNK_PAUSE_S) -> np.ndarray:
     """Concatenate the audio chunks with a silence between them."""
     silence = np.zeros(int(round(sr * pause_s)), dtype=np.float32)
     parts = []
@@ -185,6 +197,26 @@ def join_audio(chunks: list, sr: int, pause_s: float = SENTENCE_PAUSE_S) -> np.n
             parts.append(silence)
         parts.append(np.asarray(chunk, dtype=np.float32).reshape(-1))
     return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+
+
+def normalize_loudness(audio: np.ndarray, sr: int, target_dbfs: float = TARGET_DBFS,
+                       peak_limit: float = PEAK_LIMIT) -> np.ndarray:
+    """Scale the audio so its voiced part has an RMS of target_dbfs, without letting the peak pass peak_limit.
+
+    The model's raw output varies from take to take and usually sits 5–10 dB below normal speech. The level is
+    measured over 20 ms frames, ignoring those more than 20 dB below the loudest (pauses and silence).
+    """
+    signal = np.asarray(audio, dtype=np.float32).reshape(-1)
+    peak = float(np.abs(signal).max()) if signal.size else 0.0
+    if peak == 0.0:
+        return signal
+    frame = max(1, sr // 50)
+    frames = np.pad(signal.astype(np.float64), (0, -len(signal) % frame)).reshape(-1, frame)
+    rms = np.sqrt((frames ** 2).mean(axis=1))
+    voiced = frames[rms > rms.max() * 0.1]
+    level = 20 * np.log10(np.sqrt((voiced ** 2).mean()))
+    gain = min(10 ** ((target_dbfs - level) / 20), peak_limit / peak)
+    return (signal * gain).astype(np.float32)
 
 
 def wav_base64(audio: np.ndarray, sr: int) -> str:
