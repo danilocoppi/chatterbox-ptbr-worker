@@ -31,22 +31,40 @@ RunPod Serverless (queue) worker that turns **Brazilian Portuguese text into spe
 
 ## Deployment on RunPod
 
-### 1. Connect this repo to RunPod
+The image is built by GitHub Actions ([`.github/workflows/image.yml`](.github/workflows/image.yml)) and published to the GitHub Container Registry as `ghcr.io/danilocoppi/chatterbox-ptbr-worker`. RunPod pulls this ready-made image.
 
-In **Settings → Connections**, connect GitHub and grant access to this repository. A RunPod account can link only one GitHub account.
+RunPod's own GitHub builder was tried first. It downloaded at about 100 kB/s and could not finish the ~10 GB image within its 30-minute `docker build` limit.
+
+### 1. Build and publish the image
+
+Push a version tag, or run the workflow by hand:
+
+```bash
+git tag v1.0.1 && git push origin v1.0.1   # or: gh workflow run image.yml
+```
+
+The image gets up to three tags:
+- the version, such as `v1.0.1`, on tag builds only;
+- the commit, such as `sha-1a2b3c4`;
+- `latest`.
+
+A build takes about 20 minutes. Follow it in the repository's **Actions** tab.
+
+The package must be **public**, so that RunPod can pull it without credentials. This is a one-time step: on GitHub, open your profile, then **Packages → chatterbox-ptbr-worker → Package settings → Change visibility → Public**.
 
 ### 2. Create the Serverless Endpoint
 
-1. Go to **Serverless → New Endpoint → GitHub Repo**.
-2. Pick this repository, the `main` branch and the `Dockerfile` at the root.
+1. Go to **Serverless → New Endpoint** and choose to deploy a **Docker image**.
+2. **Image:** `ghcr.io/danilocoppi/chatterbox-ptbr-worker:v1.0.1`. Prefer a version or `sha-` tag over `latest`, because RunPod hosts cache images by tag.
 3. **GPU:** the model needs ~3.5 GB, so any GPU with 8 GB or more works. The 24 GB tier (L4, A5000, RTX 3090) is the cheapest option; use the 48 GB tier (A40, A6000) only for comparisons.
 4. **Workers:** for testing, set active (minimum) workers to 0 and max workers to 1.
 5. **Timeouts:** keep the default idle timeout of 5 s and execution timeout of 600 s. A job of 1,000 characters takes well under a minute.
-6. **Container disk:** 20 GB.
-7. **Allowed CUDA versions:** 12.4 or newer. The image uses PyTorch 2.6 with CUDA 12.4.
-8. **No network volume needed.** The model (~3 GB) is included in the ~10 GB image.
+6. **FlashBoot:** turn it on. Idle workers are paused instead of shut down, so the next start skips the model load, at no extra cost.
+7. **Container disk:** 20 GB.
+8. **Allowed CUDA versions:** 12.4 or newer. The image uses PyTorch 2.6 with CUDA 12.4.
+9. **No network volume needed.** The model (~3 GB) is included in the ~10 GB image.
 
-The build takes a while. RunPod allows 30 minutes for the `docker build` step and 160 minutes for the whole build. Images can be up to 80 GB.
+The first job on a new machine waits while the image is pulled.
 
 ### 3. Environment Variables
 
@@ -61,11 +79,10 @@ None are required, because everything is bundled. The image already sets:
 
 ### 4. Updating
 
-RunPod builds a new version when you **create a GitHub release**. Pushing commits alone does not redeploy:
+1. Build a new tag, as in step 1.
+2. In RunPod, edit the endpoint and change the image to the new tag.
 
-```bash
-gh release create v1.0.1 --generate-notes
-```
+Workers pick up the new image as they restart.
 
 ### 5. Smoke test
 
@@ -505,6 +522,8 @@ Each worker serves one job at a time, which is the RunPod default.
 ├── ptbr_model.py          loads Chatterbox V3 + the pt-BR pack: checkpoint, tokenizer, default voice
 ├── download_weights.py    image build step: weights, tokenizer data and default voice
 ├── Dockerfile             python:3.11-slim, pinned packages, baked-in weights
+├── .github/workflows/
+│   └── image.yml          builds the image on GitHub Actions and publishes it to ghcr.io
 ├── requirements.txt       direct dependencies (edit this one)
 ├── requirements.lock      exact versions installed in the image (generated)
 ├── tests/                 unit tests, no GPU needed
@@ -590,8 +609,10 @@ uv pip compile requirements.txt --python-version 3.11 -o requirements.lock
 | `/runsync` returns `IN_QUEUE` or `IN_PROGRESS` | The job took longer than the sync wait (90 s by default) | Poll `GET /status/{id}`, or use `/run` |
 | `Could not read the reference voice: ...` | The URL returned a web page (a Drive or Dropbox share page, say) or a format that isn't audio | Use a direct download link to a WAV, MP3, FLAC or OGG file |
 | `... points to an internal address ...` | The URL resolves to a private or local address | Host the clip on a public URL, or send it as base64 |
-| Code changes don't show up on RunPod | Commits don't trigger builds | Create a GitHub release |
-| The build fails or times out | The `docker build` step has a 30-minute limit | Retry the build; check the build logs for download errors |
+| Code changes don't show up on RunPod | The endpoint still points to the old image tag | Build a new tag and change the endpoint's image (see [Updating](#4-updating)) |
+| Workers fail to pull the image (`denied` or `unauthorized`) | The ghcr.io package is private | Make the package public (see [step 1](#1-build-and-publish-the-image)) |
+| The image build fails | See the failed run | Open the repository's **Actions** tab and read the log of the failed step |
+| The worker restarts in a loop and the log shows `Fitness check failed: ...` | The RunPod SDK's startup health checks failed on that machine | Add `RUNPOD_SKIP_AUTO_SYSTEM_CHECKS=true` (and `RUNPOD_SKIP_GPU_CHECK=true` for the GPU check) to the endpoint's environment variables; no rebuild needed |
 | Locally: `GLIBCXX_... not found` | `LD_LIBRARY_PATH` points to an older libstdc++ | Run Python with `env -u LD_LIBRARY_PATH ...` |
 
 ## Credits and License
